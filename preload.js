@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('widget', {
   onTotals: (cb) => ipcRenderer.on('totals', (_e, data) => cb(data)),
   onHover: (cb) => ipcRenderer.on('hover', (_e, data) => cb(data)),
   close: () => ipcRenderer.send('widget-close'),
+  refreshUsage: () => ipcRenderer.send('refresh-usage'),
 });

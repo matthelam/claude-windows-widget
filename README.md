@@ -25,6 +25,11 @@ reads) in the current 5-hour session window and the rolling 7-day window,
 computed from Claude Code's local transcripts. Digit colors match the pins:
 blue = session, silver = weekly.
 
+**Reset countdowns** curve along the dial ring like bezel text — the blue
+session timer in the 20-40 gap, the silver weekly timer in the 60-80 gap.
+They tick locally off the system clock (no polling); when one hits zero the
+widget fetches fresh reset times and the just-reset pin snaps back with it.
+
 ## Data sources (all local / your own account)
 
 > **No separate billing.** The usage endpoint below is an account-metadata call

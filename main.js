@@ -302,6 +302,7 @@ function createWindow() {
 }
 
 ipcMain.on('widget-close', () => app.quit());
+ipcMain.on('refresh-usage', () => pollUsage()); // countdown hit zero
 
 // CSS :hover never fires over -webkit-app-region: drag areas (the OS handles
 // them as caption hits), so detect hover here and tell the renderer.

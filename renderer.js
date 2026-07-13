@@ -19,6 +19,7 @@ const shown = { session: 0, weekly: 0, scoped: 0 };
 const target = { session: 0, weekly: 0, scoped: 0 };
 const pinEls = {};
 let odoSessionEl = null, odoWeeklyEl = null, errEl = null;
+let timerSessionEl = null, timerWeeklyEl = null;
 
 // ---------- geometry helpers ----------
 
@@ -92,12 +93,37 @@ function build() {
     }
   }
 
-  // unit marker
+  // title
   el('text', {
     x: CX, y: CY - 44, 'text-anchor': 'middle',
     'font-size': 13, fill: '#7d838d', 'letter-spacing': '2',
     'font-family': 'Segoe UI, system-ui, sans-serif',
   }).textContent = 'CLAUDE CODE %';
+
+  // reset countdowns, laid along the dial ring like bezel text — session
+  // curves through the 20-40 gap, weekly arches through the 40-60 gap, both
+  // on an arc at r=117 so even the longest pin (session, r=104) sweeps clear
+  // beneath them. They tick locally off the system clock; an API refresh is
+  // only requested when one reaches zero.
+  // path radius sits just inside the tick-number ring (r=107) so the glyphs'
+  // visual center lands on the same circle the 20/40/60 numbers align to
+  const TIMER_R = 104;
+  el('path', { id: 'timer-arc-session', d: arcPath(TIMER_R, 0.2, 0.4), fill: 'none' }, defs);
+  el('path', { id: 'timer-arc-weekly', d: arcPath(TIMER_R, 0.6, 0.8), fill: 'none' }, defs);
+  const timerFont = {
+    'font-size': 12, 'font-weight': 600,
+    'font-family': 'Segoe UI, system-ui, sans-serif',
+  };
+  const tS = el('text', { ...timerFont, fill: '#6fbaff' });   // brightened pin blue
+  timerSessionEl = el('textPath', {
+    href: '#timer-arc-session', startOffset: '50%', 'text-anchor': 'middle',
+  }, tS);
+  timerSessionEl.textContent = '—';
+  const tW = el('text', { ...timerFont, fill: '#f4f7fb' });   // brightened pin silver
+  timerWeeklyEl = el('textPath', {
+    href: '#timer-arc-weekly', startOffset: '50%', 'text-anchor': 'middle',
+  }, tW);
+  timerWeeklyEl.textContent = '—';
 
   // odometers: session + weekly token totals, digit color = pin color,
   // fixed one-word label sitting to the right of each box; the block sits in
@@ -202,6 +228,9 @@ window.widget.onUsage((data) => {
 
   target.session = sess ? (sess.percent || 0) / 100 : 0;
   target.weekly = week ? (week.percent || 0) / 100 : 0;
+  resetsAt.session = sess?.resetsAt ? Date.parse(sess.resetsAt) : null;
+  resetsAt.weekly = week?.resetsAt ? Date.parse(week.resetsAt) : null;
+  renderTimers();
   if (scoped) {
     target.scoped = (scoped.percent || 0) / 100;
     pinEls.scoped.removeAttribute('display');
@@ -209,6 +238,44 @@ window.widget.onUsage((data) => {
     pinEls.scoped.setAttribute('display', 'none');
   }
 });
+
+// ---------- reset countdowns ----------
+// resets_at timestamps come from the usage fetch; between fetches the
+// countdown runs off the local clock. When one expires we ask the main
+// process for a fresh fetch (at most once a minute while expired).
+
+const resetsAt = { session: null, weekly: null };
+let lastRefreshReq = 0;
+
+function fmtCountdown(ms) {
+  const d = Math.floor(ms / 86_400_000);
+  const h = Math.floor((ms % 86_400_000) / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  return `${m}m`;
+}
+
+function renderTimers() {
+  const now = Date.now();
+  let expired = false;
+  for (const [key, elText] of [['session', timerSessionEl], ['weekly', timerWeeklyEl]]) {
+    const at = resetsAt[key];
+    if (at == null) { elText.textContent = '—'; continue; }
+    const remaining = at - now;
+    if (remaining <= 0) {
+      elText.textContent = '…';
+      expired = true;
+    } else {
+      elText.textContent = fmtCountdown(remaining);
+    }
+  }
+  if (expired && now - lastRefreshReq > 60_000) {
+    lastRefreshReq = now;
+    window.widget.refreshUsage();
+  }
+}
+setInterval(renderTimers, 5_000);
 
 function fmtOdo(n) {
   if (n == null) return '—';
