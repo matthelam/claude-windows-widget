@@ -1,0 +1,12 @@
+{
+  "name": "claude-usage-widget",
+  "version": "1.0.0",
+  "description": "Floating desktop fuel gauge for Claude plan usage with a live token rev meter",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
