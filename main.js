@@ -296,18 +296,27 @@ function createWindow() {
     saveConfig({ x: b.x, y: b.y, w: b.width });
   });
 
-  win.webContents.on('context-menu', () => {
+  const showMenu = () => {
     Menu.buildFromTemplate([
+      { label: 'Refresh now', click: () => pollUsage() },
       {
         label: 'Always on top',
         type: 'checkbox',
         checked: win.isAlwaysOnTop(),
         click: (item) => win.setAlwaysOnTop(item.checked, 'screen-saver'),
       },
-      { label: 'Refresh now', click: () => pollUsage() },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() },
     ]).popup({ window: win });
+  };
+
+  // right-clicks over no-drag areas surface here…
+  win.webContents.on('context-menu', showMenu);
+  // …but most of the widget is a drag region, where Windows intercepts
+  // right-click for the system window menu — suppress that and show ours
+  win.on('system-context-menu', (event) => {
+    event.preventDefault();
+    showMenu();
   });
 
   win.webContents.on('did-finish-load', () => pollUsage());
