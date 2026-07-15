@@ -16,6 +16,16 @@ const SEVEN_D = 7 * 86_400_000;
 
 let win = null;
 
+// single-instance guard — a second launch focuses the existing widget
+// instead of spawning another poller against the usage endpoint
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win && !win.isDestroyed()) win.show();
+  });
+}
+
 // ---------- window position persistence ----------
 
 const configPath = () => path.join(app.getPath('userData'), 'widget-config.json');
@@ -56,10 +66,12 @@ async function fetchUsage() {
 let usageRetryTimer = null;
 let usageBackoffMs = 30_000;
 let lastGoodAt = null;
+let lastAttemptAt = 0;
 
 async function pollUsage() {
   if (!win || win.isDestroyed()) return;
   clearTimeout(usageRetryTimer);
+  lastAttemptAt = Date.now();
   try {
     const data = await fetchUsage();
     const limits = (data.limits || []).map((l) => ({
@@ -302,7 +314,10 @@ function createWindow() {
 }
 
 ipcMain.on('widget-close', () => app.quit());
-ipcMain.on('refresh-usage', () => pollUsage()); // countdown hit zero
+// countdown hit zero — but never let renderer requests exceed 1/min
+ipcMain.on('refresh-usage', () => {
+  if (Date.now() - lastAttemptAt > 60_000) pollUsage();
+});
 
 // CSS :hover never fires over -webkit-app-region: drag areas (the OS handles
 // them as caption hits), so detect hover here and tell the renderer.

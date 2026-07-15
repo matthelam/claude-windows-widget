@@ -245,7 +245,7 @@ window.widget.onUsage((data) => {
 // process for a fresh fetch (at most once a minute while expired).
 
 const resetsAt = { session: null, weekly: null };
-let lastRefreshReq = 0;
+const refreshRequestedFor = new Set(); // resets_at values already acted on
 
 function fmtCountdown(ms) {
   const d = Math.floor(ms / 86_400_000);
@@ -258,22 +258,25 @@ function fmtCountdown(ms) {
 
 function renderTimers() {
   const now = Date.now();
-  let expired = false;
+  let newlyExpired = false;
   for (const [key, elText] of [['session', timerSessionEl], ['weekly', timerWeeklyEl]]) {
     const at = resetsAt[key];
     if (at == null) { elText.textContent = '—'; continue; }
     const remaining = at - now;
     if (remaining <= 0) {
       elText.textContent = '…';
-      expired = true;
+      // one refresh per distinct expiry — NEVER a retry loop; the regular
+      // 3-minute poll (with backoff) owns recovery from here
+      if (!refreshRequestedFor.has(at)) {
+        refreshRequestedFor.add(at);
+        newlyExpired = true;
+      }
     } else {
       elText.textContent = fmtCountdown(remaining);
     }
   }
-  if (expired && now - lastRefreshReq > 60_000) {
-    lastRefreshReq = now;
-    window.widget.refreshUsage();
-  }
+  if (newlyExpired) window.widget.refreshUsage();
+  if (refreshRequestedFor.size > 50) refreshRequestedFor.clear(); // bound memory
 }
 setInterval(renderTimers, 5_000);
 
