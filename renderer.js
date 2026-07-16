@@ -212,8 +212,10 @@ window.widget.onUsage((data) => {
     const stale = data.staleForMs == null || data.staleForMs > STALE_MS;
     errEl.textContent = !stale
       ? ''
-      : data.error === 'http-401'
-        ? 'auth expired — open Claude Code to refresh'
+      : data.error === 'auth-refreshing'
+        ? 'refreshing login…'
+        : data.error === 'auth-expired' || data.error === 'http-401'
+        ? 'login expired — run Claude Code to refresh'
         : data.error === 'http-429'
         ? 'rate limited — waiting to retry'
         : `usage fetch failed (${data.error})`;

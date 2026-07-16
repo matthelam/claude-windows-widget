@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, Menu, screen } = require('electron');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -45,21 +46,34 @@ function saveConfig(patch) {
 // total local tokens within these windows
 const windowStarts = { session: null, weekly: null };
 
-function readAccessToken() {
+function readCreds() {
   const creds = JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
-  return creds?.claudeAiOauth?.accessToken || null;
+  const o = creds?.claudeAiOauth;
+  return { token: o?.accessToken || null, expiresAt: o?.expiresAt || null };
 }
 
 async function fetchUsage() {
-  const token = readAccessToken();
+  const { token, expiresAt } = readCreds();
   if (!token) throw new Error('no-token');
+  // an expired token gets 429s (not 401s) from the endpoint — never send it;
+  // Claude Code rewrites the file on its next run and we re-read every poll
+  if (expiresAt && Date.now() >= expiresAt) {
+    const e = new Error('auth-expired');
+    e.localOnly = true;
+    throw e;
+  }
   const res = await fetch(USAGE_URL, {
     headers: {
       Authorization: `Bearer ${token}`,
       'anthropic-beta': 'oauth-2025-04-20',
     },
   });
-  if (!res.ok) throw new Error(`http-${res.status}`);
+  if (!res.ok) {
+    const e = new Error(`http-${res.status}`);
+    const ra = Number(res.headers.get('retry-after'));
+    if (ra > 0) e.retryAfterMs = Math.min(ra * 1000, 3_600_000);
+    throw e;
+  }
   return res.json();
 }
 
@@ -96,15 +110,64 @@ async function pollUsage() {
     win.webContents.send('usage', { ok: true, limits, fetchedAt: lastGoodAt });
     sendTotals();
   } catch (err) {
+    let errorCode = String(err.message || err);
+    if (err.localOnly) {
+      // token truly expired: silently run a minimal `claude -p` so Claude
+      // Code rewrites the credentials file, and recheck the file soon
+      tryAutoRefreshAuth();
+      if (authRefreshInFlight) errorCode = 'auth-refreshing';
+    }
     win.webContents.send('usage', {
       ok: false,
-      error: String(err.message || err),
+      error: errorCode,
       staleForMs: lastGoodAt ? Date.now() - lastGoodAt : null,
     });
-    // exponential backoff so we don't feed the rate limiter
-    usageRetryTimer = setTimeout(pollUsage, usageBackoffMs);
-    usageBackoffMs = Math.min(usageBackoffMs * 2, 600_000);
+    if (err.localOnly) {
+      usageRetryTimer = setTimeout(pollUsage, 60_000);
+    } else {
+      // exponential backoff, and honor the server's Retry-After if longer
+      const delay = Math.max(usageBackoffMs, err.retryAfterMs || 0);
+      usageRetryTimer = setTimeout(pollUsage, delay);
+      usageBackoffMs = Math.min(usageBackoffMs * 2, 600_000);
+    }
   }
+}
+
+// ---------- silent auth refresh ----------
+// Runs a minimal hidden `claude -p` purely so Claude Code refreshes the OAuth
+// token in .credentials.json. Called ONLY when the stored token is already
+// past its expiry timestamp; single-flight and at most once per 10 minutes.
+
+let authRefreshInFlight = false;
+let lastAuthRefreshAt = 0;
+
+function tryAutoRefreshAuth() {
+  const now = Date.now();
+  if (authRefreshInFlight || now - lastAuthRefreshAt < 10 * 60_000) return;
+  authRefreshInFlight = true;
+  lastAuthRefreshAt = now;
+
+  let child;
+  try {
+    child = spawn('claude', ['-p', 'ok', '--max-turns', '1'], {
+      shell: true,          // resolves the claude .cmd shim on Windows
+      windowsHide: true,    // no console window
+      stdio: 'ignore',
+    });
+  } catch {
+    authRefreshInFlight = false;
+    return;
+  }
+  const killer = setTimeout(() => { try { child.kill(); } catch {} }, 120_000);
+  child.on('exit', () => {
+    clearTimeout(killer);
+    authRefreshInFlight = false;
+    pollUsage(); // pick up the refreshed token right away
+  });
+  child.on('error', () => {
+    clearTimeout(killer);
+    authRefreshInFlight = false;
+  });
 }
 
 // ---------- token totals (tail Claude Code transcripts) ----------
