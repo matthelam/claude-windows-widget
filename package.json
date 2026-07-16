@@ -2,6 +2,7 @@
   "name": "claude-usage-widget",
   "version": "1.0.0",
   "description": "Floating desktop fuel gauge for Claude plan usage with reset timers and token odometers",
+  "author": "Matthew Lam",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
