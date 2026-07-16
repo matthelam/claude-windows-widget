@@ -1,12 +1,40 @@
 {
   "name": "claude-usage-widget",
   "version": "1.0.0",
-  "description": "Floating desktop fuel gauge for Claude plan usage with a live token rev meter",
+  "description": "Floating desktop fuel gauge for Claude plan usage with reset timers and token odometers",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.matthelam.claude-usage-widget",
+    "productName": "Claude Usage Widget",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": false
+    }
   }
 }

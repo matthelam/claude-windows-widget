@@ -6,6 +6,15 @@ throughput.
 
 ![widget](docs/widget.png)
 
+## Download (no code required)
+
+Grab **Claude Usage Widget Setup x.x.x.exe** from the
+[latest release](https://github.com/matthelam/claude-windows-widget/releases/latest)
+and run it. The widget installs per-user (no admin needed), adds itself to
+Windows startup, and appears in Settings > Apps with a normal uninstaller.
+Requires [Claude Code](https://claude.com/claude-code) to be logged in on the
+same machine — the widget reads its local session.
+
 ## What it shows
 
 A single 0–100% dial with up to three watch-style pins — no labels needed,

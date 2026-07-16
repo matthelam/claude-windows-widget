@@ -17,6 +17,10 @@ const SEVEN_D = 7 * 86_400_000;
 
 let win = null;
 
+// keep one userData dir (window position, flags) across dev runs and the
+// packaged app, which would otherwise use the productName-based path
+app.setPath('userData', path.join(app.getPath('appData'), 'claude-usage-widget'));
+
 // single-instance guard — a second launch focuses the existing widget
 // instead of spawning another poller against the usage endpoint
 if (!app.requestSingleInstanceLock()) {
@@ -368,6 +372,13 @@ function createWindow() {
         checked: win.isAlwaysOnTop(),
         click: (item) => win.setAlwaysOnTop(item.checked, 'screen-saver'),
       },
+      {
+        label: 'Start at login',
+        type: 'checkbox',
+        enabled: app.isPackaged, // dev runs would register electron.exe
+        checked: app.getLoginItemSettings().openAtLogin,
+        click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+      },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() },
     ]).popup({ window: win });
@@ -406,6 +417,13 @@ function pollHover() {
 }
 
 app.whenReady().then(() => {
+  // first packaged run: register with Windows startup (Settings > Apps >
+  // Startup) once; the context-menu checkbox controls it from then on
+  if (app.isPackaged && !loadConfig().loginItemInit) {
+    app.setLoginItemSettings({ openAtLogin: true });
+    saveConfig({ loginItemInit: true });
+  }
+
   createWindow();
   initWatcher();
   scanHistory();
