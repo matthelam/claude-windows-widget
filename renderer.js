@@ -18,24 +18,35 @@ const svg = document.getElementById('gauge');
 const shown = { session: 0, weekly: 0, scoped: 0 };
 const target = { session: 0, weekly: 0, scoped: 0 };
 const pinEls = {};
-let odoSessionEl = null, odoWeeklyEl = null, errEl = null;
+let odoSessionEl = null, odoWeeklyEl = null, odoBlock = null, errEl = null;
 let timerSessionEl = null, timerWeeklyEl = null;
+// credit boost pod — a small conditional subdial at the cluster's lower right
+const CREDIT_COLOR = '#55c97a';
+// pod near-edge sits at 155.6-48 ≈ 108 from the dial center — just clear of
+// the session pin's 104 reach; far edge at 318 stays inside the 320 viewBox
+const POD = { cx: 270, cy: 270 };
+let creditPod = null, creditNeedle = null, creditArc = null, creditValue = null;
+let creditTicks = null, creditBudgetDrawn = null;
+let shownCredit = 0, targetCredit = 0;
 
 // ---------- geometry helpers ----------
 
-function polar(r, deg) {
+function polarAt(cx, cy, r, deg) {
   const a = (deg * Math.PI) / 180;
-  return [CX + r * Math.cos(a), CY + r * Math.sin(a)];
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
 }
 
-function arcPath(r, fromFrac, toFrac) {
+function arcPathAt(cx, cy, r, fromFrac, toFrac) {
   const a0 = START_DEG + SWEEP_DEG * fromFrac;
   const a1 = START_DEG + SWEEP_DEG * toFrac;
-  const [x0, y0] = polar(r, a0);
-  const [x1, y1] = polar(r, a1);
+  const [x0, y0] = polarAt(cx, cy, r, a0);
+  const [x1, y1] = polarAt(cx, cy, r, a1);
   const large = a1 - a0 > 180 ? 1 : 0;
   return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
 }
+
+const polar = (r, deg) => polarAt(CX, CY, r, deg);
+const arcPath = (r, f0, f1) => arcPathAt(CX, CY, r, f0, f1);
 
 function el(name, attrs, parent) {
   const n = document.createElementNS(SVG_NS, name);
@@ -128,8 +139,14 @@ function build() {
   // odometers: session + weekly token totals, digit color = pin color,
   // fixed one-word label sitting to the right of each box; the block sits in
   // the dial's bottom void, inside the 0 and 100 tick labels
-  odoSessionEl = buildOdometer(204, PINS.session.color, 'SESSION');
-  odoWeeklyEl = buildOdometer(240, PINS.weekly.color, 'WEEKLY');
+  odoBlock = el('g', {});
+  odoSessionEl = buildOdometer(204, PINS.session.color, 'SESSION', odoBlock).text;
+  odoWeeklyEl = buildOdometer(240, PINS.weekly.color, 'WEEKLY', odoBlock).text;
+
+  // usage-credit boost pod — only visible while a budget is active
+  // (right-click menu > Credit budget); overlaps the 100% corner like a
+  // turbo gauge bolted onto the cluster
+  buildCreditPod();
 
   // pins (weekly under session under fable), then hub
   pinEls.weekly = buildPin([
@@ -171,25 +188,106 @@ function buildPin(parts) {
   return g;
 }
 
-function buildOdometer(y, color, label) {
+function buildCreditPod() {
+  const { cx, cy } = POD;
+  creditPod = el('g', {});
+  creditPod.setAttribute('display', 'none');
+
+  el('circle', { cx, cy, r: 48, fill: 'rgba(10,11,14,0.96)', stroke: 'rgba(255,255,255,0.14)', 'stroke-width': 1 }, creditPod);
+  el('circle', { cx, cy, r: 42, fill: 'url(#face)', stroke: 'rgba(255,255,255,0.08)', 'stroke-width': 1 }, creditPod);
+
+  creditTicks = el('g', {}, creditPod);
+
+  creditArc = el('path', {
+    d: arcPathAt(cx, cy, 39.5, 0, 0.0001), fill: 'none',
+    stroke: CREDIT_COLOR, 'stroke-width': 3.5, 'stroke-linecap': 'round',
+  }, creditPod);
+
+  el('text', {
+    x: cx, y: cy - 12, 'text-anchor': 'middle',
+    'font-size': 5, fill: '#7d838d', 'letter-spacing': '1.5', 'font-weight': 600,
+    'font-family': 'Segoe UI, system-ui, sans-serif',
+  }, creditPod).textContent = 'CREDITS';
+
+  creditNeedle = el('g', {}, creditPod);
+  el('path', {
+    d: `M ${cx - 2} ${cy + 5.5} L ${cx} ${cy - 31} L ${cx + 2} ${cy + 5.5} Z`,
+    fill: CREDIT_COLOR, filter: 'url(#glow)',
+  }, creditNeedle);
+  creditNeedle.setAttribute('transform', `rotate(${START_DEG - 270} ${cx} ${cy})`);
+
+  el('circle', { cx, cy, r: 4, fill: '#22262f', stroke: '#3a3f4b', 'stroke-width': 1.5 }, creditPod);
+  el('circle', { cx, cy, r: 1.5, fill: '#9aa0aa' }, creditPod);
+
+  creditValue = el('text', {
+    x: cx, y: cy + 29, 'text-anchor': 'middle',
+    'font-size': 8.5, 'font-weight': 600, fill: CREDIT_COLOR,
+    'font-family': 'Consolas, "Cascadia Mono", monospace',
+  }, creditPod);
+  creditValue.textContent = '$0';
+}
+
+function drawCreditTicks(budgetMinor) {
+  const { cx, cy } = POD;
+  creditTicks.innerHTML = '';
+  const budget = budgetMinor / 100;
+
+  // redline on the last 10% of the budget
+  el('path', {
+    d: arcPathAt(cx, cy, 35, 0.9, 1), fill: 'none',
+    stroke: 'rgba(255,69,48,0.6)', 'stroke-width': 3,
+  }, creditTicks);
+
+  for (let i = 0; i <= 10; i++) {
+    const frac = i / 10;
+    const deg = START_DEG + SWEEP_DEG * frac;
+    const major = i % 2 === 0;
+    const [x0, y0] = polarAt(cx, cy, major ? 30 : 33, deg);
+    const [x1, y1] = polarAt(cx, cy, 36.5, deg);
+    el('line', {
+      x1: x0, y1: y0, x2: x1, y2: y1,
+      stroke: frac >= 0.9 ? '#ff4530' : major ? '#c8ccd4' : '#565c68',
+      'stroke-width': major ? 1.5 : 0.8,
+    }, creditTicks);
+  }
+
+  // $ increment labels: start, midpoint, and the budget total at the end
+  const labels = [
+    [0, '0', '#9aa0aa'],
+    [0.5, String(budget / 2), '#9aa0aa'],
+    [1, `$${budget}`, CREDIT_COLOR],
+  ];
+  for (const [frac, textStr, fill] of labels) {
+    const deg = START_DEG + SWEEP_DEG * frac;
+    const [tx, ty] = polarAt(cx, cy, 22.5, deg);
+    el('text', {
+      x: tx, y: ty + 2.5, 'text-anchor': 'middle',
+      'font-size': 6, 'font-weight': 600, fill,
+      'font-family': 'Segoe UI, system-ui, sans-serif',
+    }, creditTicks).textContent = textStr;
+  }
+}
+
+function buildOdometer(y, color, label, parent) {
+  const g = el('g', {}, parent);
   el('rect', {
     x: 96, y, width: 88, height: 22, rx: 5,
     fill: '#0a0c10', stroke: 'rgba(255,255,255,0.09)', 'stroke-width': 1,
-  });
-  el('rect', { x: 102, y: y + 5, width: 4, height: 12, rx: 2, fill: color });
+  }, g);
+  el('rect', { x: 102, y: y + 5, width: 4, height: 12, rx: 2, fill: color }, g);
   const t = el('text', {
     x: 178, y: y + 15, 'text-anchor': 'end',
     'font-size': 11.5, fill: color,
     'font-family': 'Consolas, "Cascadia Mono", monospace',
-  });
+  }, g);
   t.textContent = '—';
   const lab = el('text', {
     x: 188, y: y + 14.5, 'text-anchor': 'start',
     'font-size': 7.5, fill: color, opacity: 0.75, 'letter-spacing': '0.8',
     'font-family': 'Segoe UI, system-ui, sans-serif', 'font-weight': 600,
-  });
+  }, g);
   lab.textContent = label;
-  return t;
+  return { group: g, text: t };
 }
 
 // ---------- live updates ----------
@@ -200,6 +298,9 @@ function animate() {
     const deg = START_DEG + SWEEP_DEG * Math.min(1, Math.max(0, shown[key]));
     pinEls[key].setAttribute('transform', `rotate(${deg - 270} ${CX} ${CY})`);
   }
+  shownCredit += (targetCredit - shownCredit) * 0.1;
+  const cdeg = START_DEG + SWEEP_DEG * Math.min(1, Math.max(0, shownCredit));
+  creditNeedle.setAttribute('transform', `rotate(${cdeg - 270} ${POD.cx} ${POD.cy})`);
   requestAnimationFrame(animate);
 }
 
@@ -233,6 +334,24 @@ window.widget.onUsage((data) => {
   resetsAt.session = sess?.resetsAt ? Date.parse(sess.resetsAt) : null;
   resetsAt.weekly = week?.resetsAt ? Date.parse(week.resetsAt) : null;
   renderTimers();
+
+  if (data.credits) {
+    const { usedMinor, budgetMinor } = data.credits;
+    const used = usedMinor / 100;
+    const over = usedMinor > budgetMinor;
+    if (creditBudgetDrawn !== budgetMinor) {
+      creditBudgetDrawn = budgetMinor;
+      drawCreditTicks(budgetMinor);
+    }
+    targetCredit = Math.min(1, usedMinor / budgetMinor);
+    creditArc.setAttribute('d', arcPathAt(POD.cx, POD.cy, 43, 0, Math.max(0.0001, targetCredit)));
+    creditArc.setAttribute('stroke', over ? '#ff4530' : CREDIT_COLOR);
+    creditValue.textContent = `$${used.toFixed(used >= 100 ? 1 : 2)}`;
+    creditValue.setAttribute('fill', over ? '#ff6a58' : CREDIT_COLOR);
+    creditPod.removeAttribute('display');
+  } else {
+    creditPod.setAttribute('display', 'none');
+  }
   if (scoped) {
     target.scoped = (scoped.percent || 0) / 100;
     pinEls.scoped.removeAttribute('display');

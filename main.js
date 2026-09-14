@@ -85,6 +85,18 @@ let usageRetryTimer = null;
 let usageBackoffMs = 30_000;
 let lastGoodAt = null;
 let lastAttemptAt = 0;
+let lastSpendMinor = null; // cumulative extra-usage spend, minor units
+
+// the API only exposes cumulative credit spend — a user-started budget
+// snapshots it as a baseline so we can show "$14.60/$50"
+function creditState() {
+  const b = loadConfig().creditBudget;
+  if (!b || lastSpendMinor == null) return null;
+  return {
+    usedMinor: Math.max(0, lastSpendMinor - b.startUsedMinor),
+    budgetMinor: b.budgetMinor,
+  };
+}
 
 async function pollUsage() {
   if (!win || win.isDestroyed()) return;
@@ -111,7 +123,13 @@ async function pollUsage() {
 
     lastGoodAt = Date.now();
     usageBackoffMs = 30_000;
-    win.webContents.send('usage', { ok: true, limits, fetchedAt: lastGoodAt });
+    lastSpendMinor = data.spend?.used?.amount_minor ?? null;
+    win.webContents.send('usage', {
+      ok: true,
+      limits,
+      credits: creditState(),
+      fetchedAt: lastGoodAt,
+    });
     sendTotals();
   } catch (err) {
     let errorCode = String(err.message || err);
@@ -378,6 +396,27 @@ function createWindow() {
         enabled: app.isPackaged, // dev runs would register electron.exe
         checked: app.getLoginItemSettings().openAtLogin,
         click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+      },
+      {
+        label: 'Credit budget',
+        submenu: [
+          ...[25, 50, 100, 200].map((amt) => ({
+            label: `Start $${amt} budget`,
+            enabled: lastSpendMinor != null,
+            click: () => {
+              saveConfig({ creditBudget: { startUsedMinor: lastSpendMinor, budgetMinor: amt * 100 } });
+              pollUsage();
+            },
+          })),
+          { type: 'separator' },
+          {
+            label: 'Clear budget',
+            click: () => {
+              saveConfig({ creditBudget: null });
+              pollUsage();
+            },
+          },
+        ],
       },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() },
