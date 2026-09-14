@@ -343,14 +343,49 @@ const MAX_W = 800;
 
 const clampW = (w) => Math.max(MIN_W, Math.min(MAX_W, Math.round(w)));
 
+// a saved position survives monitor changes, so it can point outside every
+// display; the widget is frameless and skips the taskbar, which leaves no way
+// to drag it back. Restore it only while a grabbable corner is still on a
+// display, otherwise pull it inside the nearest one.
+const MIN_VISIBLE = 48;
+
+function restorePosition(x, y, w, h) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return {};
+  const overlap = (a) =>
+    Math.min(x + w, a.x + a.width) - Math.max(x, a.x) >= MIN_VISIBLE &&
+    Math.min(y + h, a.y + a.height) - Math.max(y, a.y) >= MIN_VISIBLE;
+  if (screen.getAllDisplays().some((d) => overlap(d.workArea))) return { x, y };
+  const a = screen.getDisplayMatching({ x, y, width: w, height: h }).workArea;
+  return {
+    x: Math.round(Math.max(a.x, Math.min(x, a.x + a.width - w))),
+    y: Math.round(Math.max(a.y, Math.min(y, a.y + a.height - h))),
+  };
+}
+
+// re-run the check when a monitor is added, removed or rescaled while the
+// widget is running, so it is never stranded off the desktop
+function keepOnScreen() {
+  if (!win || win.isDestroyed()) return;
+  const b = win.getBounds();
+  const pos = restorePosition(b.x, b.y, b.width, b.height);
+  if (pos.x === undefined || (pos.x === b.x && pos.y === b.y)) return;
+  win.setPosition(pos.x, pos.y);
+  saveConfig({ x: pos.x, y: pos.y });
+}
+
 function createWindow() {
   const cfg = loadConfig();
   const w = clampW(cfg.w || BASE_W);
+  const h = Math.round(w * RATIO);
+  const pos = restorePosition(cfg.x, cfg.y, w, h);
+  // write the corrected position straight back, so a stranded config heals
+  // even if the widget is never moved by hand afterwards
+  if (pos.x !== undefined && (pos.x !== cfg.x || pos.y !== cfg.y)) saveConfig(pos);
   win = new BrowserWindow({
     width: w,
-    height: Math.round(w * RATIO),
-    x: cfg.x,
-    y: cfg.y,
+    height: h,
+    x: pos.x,
+    y: pos.y,
     transparent: true,
     frame: false,
     resizable: true,
@@ -469,6 +504,10 @@ app.whenReady().then(() => {
   setInterval(pollUsage, USAGE_POLL_MS);
   setInterval(pollTokens, TOKEN_POLL_MS);
   setInterval(pollHover, 150);
+
+  for (const ev of ["display-removed", "display-added", "display-metrics-changed"]) {
+    screen.on(ev, keepOnScreen);
+  }
 });
 
 app.on('window-all-closed', () => app.quit());
