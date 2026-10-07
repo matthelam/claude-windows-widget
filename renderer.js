@@ -29,6 +29,15 @@ let creditPod = null, creditNeedle = null, creditArc = null, creditValue = null;
 let creditTicks = null, creditBudgetDrawn = null;
 let shownCredit = 0, targetCredit = 0;
 
+// mode layers: the face, ticks and hub are shared; everything else belongs to
+// one mode. API mode turns the dial into dollars used against credit loaded.
+const API_COLOR = '#55c97a';
+let mode = 'subscription';
+let subLayer = null, apiLayer = null, titleEl = null;
+const tickLabels = []; // { el, frac }
+let apiNeedle = null, apiLeftEl = null, apiExpiryEl = null, apiUsedEl = null, apiMonthEl = null;
+let apiLoadedMinor = null, shownApi = 0, targetApi = 0;
+
 // ---------- geometry helpers ----------
 
 function polarAt(cx, cy, r, deg) {
@@ -100,16 +109,19 @@ function build() {
         fill: inRed ? '#ff6a58' : '#9aa0aa',
         'font-family': 'Segoe UI, system-ui, sans-serif',
       });
-      t.textContent = String(frac * 100);
+      tickLabels.push({ el: t, frac });
     }
   }
 
   // title
-  el('text', {
+  titleEl = el('text', {
     x: CX, y: CY - 44, 'text-anchor': 'middle',
     'font-size': 13, fill: '#7d838d', 'letter-spacing': '2',
     'font-family': 'Segoe UI, system-ui, sans-serif',
-  }).textContent = 'CLAUDE CODE %';
+  });
+
+  subLayer = el('g', {});
+  apiLayer = el('g', {});
 
   // reset countdowns, laid along the dial ring like bezel text — session
   // curves through the 20-40 gap, weekly arches through the 40-60 gap, both
@@ -125,12 +137,12 @@ function build() {
     'font-size': 12, 'font-weight': 600,
     'font-family': 'Segoe UI, system-ui, sans-serif',
   };
-  const tS = el('text', { ...timerFont, fill: '#6fbaff' });   // brightened pin blue
+  const tS = el('text', { ...timerFont, fill: '#6fbaff' }, subLayer);   // brightened pin blue
   timerSessionEl = el('textPath', {
     href: '#timer-arc-session', startOffset: '50%', 'text-anchor': 'middle',
   }, tS);
   timerSessionEl.textContent = '—';
-  const tW = el('text', { ...timerFont, fill: '#f4f7fb' });   // brightened pin silver
+  const tW = el('text', { ...timerFont, fill: '#f4f7fb' }, subLayer);   // brightened pin silver
   timerWeeklyEl = el('textPath', {
     href: '#timer-arc-weekly', startOffset: '50%', 'text-anchor': 'middle',
   }, tW);
@@ -139,14 +151,14 @@ function build() {
   // odometers: session + weekly token totals, digit color = pin color,
   // fixed one-word label sitting to the right of each box; the block sits in
   // the dial's bottom void, inside the 0 and 100 tick labels
-  odoBlock = el('g', {});
+  odoBlock = el('g', {}, subLayer);
   odoSessionEl = buildOdometer(204, PINS.session.color, 'SESSION', odoBlock).text;
   odoWeeklyEl = buildOdometer(240, PINS.weekly.color, 'WEEKLY', odoBlock).text;
 
   // usage-credit boost pod — only visible while a budget is active
   // (right-click menu > Credit budget); overlaps the 100% corner like a
   // turbo gauge bolted onto the cluster
-  buildCreditPod();
+  buildCreditPod(subLayer);
 
   // pins (weekly under session under fable), then hub
   pinEls.weekly = buildPin([
@@ -170,6 +182,8 @@ function build() {
   ]);
   pinEls.scoped.setAttribute('display', 'none');
 
+  buildApiLayer();
+
   el('circle', { cx: CX, cy: CY, r: 9, fill: '#22262f', stroke: '#3a3f4b', 'stroke-width': 2 });
   el('circle', { cx: CX, cy: CY, r: 3, fill: '#9aa0aa' });
 
@@ -181,16 +195,38 @@ function build() {
   });
 }
 
-function buildPin(parts) {
-  const g = el('g', {});
+function buildPin(parts, parent = subLayer) {
+  const g = el('g', {}, parent);
   for (const [name, attrs] of parts) el(name, attrs, g);
   g.setAttribute('transform', `rotate(${START_DEG - 270} ${CX} ${CY})`);
   return g;
 }
 
-function buildCreditPod() {
+// API mode reuses the subscription layout: one green needle for dollars used,
+// remaining balance and expiry on the bezel arcs, used/loaded and this
+// month's spend in the odometer boxes
+function buildApiLayer() {
+  const bezelFont = { 'font-size': 12, 'font-weight': 600, 'font-family': 'Segoe UI, system-ui, sans-serif' };
+  const left = el('text', { ...bezelFont, fill: '#7fe0a0' }, apiLayer);
+  apiLeftEl = el('textPath', { href: '#timer-arc-session', startOffset: '50%', 'text-anchor': 'middle' }, left);
+  const exp = el('text', { ...bezelFont, fill: '#f4f7fb' }, apiLayer);
+  apiExpiryEl = el('textPath', { href: '#timer-arc-weekly', startOffset: '50%', 'text-anchor': 'middle' }, exp);
+
+  apiUsedEl = buildOdometer(204, API_COLOR, 'USED', apiLayer).text;
+  apiMonthEl = buildOdometer(240, PINS.weekly.color, 'MONTH', apiLayer).text;
+
+  apiNeedle = buildPin([
+    ['path', {
+      d: `M ${CX - 3} ${CY + 14} L ${CX - 0.8} ${CY - 104} L ${CX + 0.8} ${CY - 104} L ${CX + 3} ${CY + 14} Z`,
+      fill: API_COLOR, filter: 'url(#glow)',
+    }],
+  ], apiLayer);
+  clearApi();
+}
+
+function buildCreditPod(parent) {
   const { cx, cy } = POD;
-  creditPod = el('g', {});
+  creditPod = el('g', {}, parent);
   creditPod.setAttribute('display', 'none');
 
   el('circle', { cx, cy, r: 48, fill: 'rgba(10,11,14,0.96)', stroke: 'rgba(255,255,255,0.14)', 'stroke-width': 1 }, creditPod);
@@ -301,12 +337,16 @@ function animate() {
   shownCredit += (targetCredit - shownCredit) * 0.1;
   const cdeg = START_DEG + SWEEP_DEG * Math.min(1, Math.max(0, shownCredit));
   creditNeedle.setAttribute('transform', `rotate(${cdeg - 270} ${POD.cx} ${POD.cy})`);
+  shownApi += (targetApi - shownApi) * 0.1;
+  const adeg = START_DEG + SWEEP_DEG * Math.min(1, Math.max(0, shownApi));
+  apiNeedle.setAttribute('transform', `rotate(${adeg - 270} ${CX} ${CY})`);
   requestAnimationFrame(animate);
 }
 
 const STALE_MS = 15 * 60_000;
 
 window.widget.onUsage((data) => {
+  if (mode === 'api') return;
   if (!data.ok) {
     // stay quiet while the last good reading is still fresh — transient 429s
     // and blips resolve themselves via backoff retries
@@ -412,6 +452,81 @@ window.widget.onTotals(({ session, weekly }) => {
   odoWeeklyEl.textContent = fmtOdo(weekly);
 });
 
+// ---------- API credits mode ----------
+
+function fmtUsd(v, compact) {
+  if (!compact) return `$${v.toFixed(2)}`;
+  if (v >= 1000) return `$${+(v / 1000).toFixed(1)}k`;
+  return Number.isInteger(v) ? `$${v}` : `$${v.toFixed(v < 10 ? 1 : 0)}`;
+}
+
+// "$2.24/$50"; drops the cents when the pair would overflow the box
+function fitPair(partMinor, totalMinor) {
+  const full = `${fmtUsd(partMinor / 100)}/${fmtUsd(totalMinor / 100, true)}`;
+  return full.length <= 10 ? full : `${fmtUsd(partMinor / 100, true)}/${fmtUsd(totalMinor / 100, true)}`;
+}
+
+function setTickLabels() {
+  for (const { el: t, frac } of tickLabels) {
+    t.textContent = mode !== 'api'
+      ? String(Math.round(frac * 100))
+      : apiLoadedMinor ? fmtUsd((apiLoadedMinor * frac) / 100, true) : '';
+  }
+}
+
+// readings are blanked, never left stale, when the Console stops answering
+function clearApi() {
+  apiLoadedMinor = null;
+  targetApi = 0;
+  apiLeftEl.textContent = '—';
+  apiExpiryEl.textContent = '';
+  apiUsedEl.textContent = '—';
+  apiMonthEl.textContent = '—';
+  setTickLabels();
+}
+
+window.widget.onApi((data) => {
+  if (mode !== 'api') return;
+  if (!data.ok) {
+    if (data.error === 'console-signin') {
+      clearApi();
+      errEl.textContent = 'right-click › Sign in to Console';
+    } else if (data.staleForMs == null || data.staleForMs > STALE_MS) {
+      clearApi();
+      errEl.textContent = 'API data unavailable';
+    }
+    return;
+  }
+  apiLoadedMinor = data.loadedMinor || null;
+  setTickLabels();
+  targetApi = data.loadedMinor > 0 ? Math.min(1, data.usedMinor / data.loadedMinor) : 0;
+
+  const low = data.loadedMinor > 0 && data.remainingMinor < data.loadedMinor * 0.1;
+  apiLeftEl.parentNode.setAttribute('fill', low ? '#ff6a58' : '#7fe0a0');
+  apiLeftEl.textContent = `${fmtUsd(data.remainingMinor / 100)} left`;
+  apiExpiryEl.textContent = data.nextExpiry
+    ? `exp ${new Date(data.nextExpiry).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: '2-digit' })}`
+    : '';
+  apiUsedEl.textContent = data.loadedMinor > 0 ? fitPair(data.usedMinor, data.loadedMinor) : '$0.00';
+  // the tier ceiling is noise; only show a cap the user has set
+  apiMonthEl.textContent = data.userCapSet && data.capMinor
+    ? fitPair(data.monthMinor, data.capMinor)
+    : fmtUsd(data.monthMinor / 100);
+  errEl.textContent = data.autoReload ? 'auto-reload on' : 'auto-reload off';
+});
+
+function applyMode(m) {
+  mode = m;
+  const api = m === 'api';
+  subLayer.setAttribute('display', api ? 'none' : 'inline');
+  apiLayer.setAttribute('display', api ? 'inline' : 'none');
+  titleEl.textContent = api ? 'CLAUDE API $' : 'CLAUDE CODE %';
+  errEl.textContent = '';
+  if (api) clearApi(); else setTickLabels();
+}
+
+window.widget.onMode(applyMode);
+
 document.getElementById('close-btn').addEventListener('click', () => window.widget.close());
 
 window.widget.onHover((inside) => document.body.classList.toggle('hovered', inside));
@@ -431,5 +546,6 @@ function applyScale() {
 window.addEventListener('resize', applyScale);
 
 build();
+applyMode('subscription');
 animate();
 applyScale();

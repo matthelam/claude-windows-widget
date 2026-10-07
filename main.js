@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, screen, session } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +10,7 @@ const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
 const USAGE_POLL_MS = 180_000;   // gentle cadence — the usage endpoint rate-limits
+const API_POLL_MS = 300_000;
 const TOKEN_POLL_MS = 2_000;
 const ACTIVE_FILE_WINDOW_MS = 15 * 60_000;
 const FIVE_H = 5 * 3600_000;
@@ -43,6 +44,9 @@ function saveConfig(patch) {
   const cfg = { ...loadConfig(), ...patch };
   try { fs.writeFileSync(configPath(), JSON.stringify(cfg)); } catch {}
 }
+
+// 'subscription' reads the plan limits; 'api' reads Console prepaid credits
+const isApi = () => loadConfig().mode === 'api';
 
 // ---------- plan usage (OAuth endpoint) ----------
 
@@ -99,7 +103,7 @@ function creditState() {
 }
 
 async function pollUsage() {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || isApi()) return;
   clearTimeout(usageRetryTimer);
   lastAttemptAt = Date.now();
   try {
@@ -190,6 +194,185 @@ function tryAutoRefreshAuth() {
     clearTimeout(killer);
     authRefreshInFlight = false;
   });
+}
+
+// ---------- API credits (Claude Console) ----------
+// There is no public endpoint for prepaid balance, and the Admin API is not
+// available to individual orgs, so this reads the internal endpoints the
+// Console billing page itself uses. They are authenticated by a Console
+// sign-in held in a widget-only session partition, and are undocumented:
+// any failure blanks the readings rather than showing stale numbers.
+
+const CONSOLE_ORIGIN = 'https://platform.claude.com';
+const CONSOLE_PARTITION = 'persist:console';
+
+let consoleSes = null;
+function consoleSession() {
+  if (!consoleSes) {
+    consoleSes = session.fromPartition(CONSOLE_PARTITION);
+    // Google refuses sign-in from user agents that name an embedded browser
+    consoleSes.setUserAgent(
+      consoleSes.getUserAgent().replace(/ (Electron|claude-usage-widget)\/\S+/g, ''),
+    );
+  }
+  return consoleSes;
+}
+
+// diagnostics for the undocumented Console calls: statuses and error text
+// only, never response bodies on success or cookie values
+function log(msg) {
+  try {
+    const p = path.join(app.getPath('userData'), 'widget.log');
+    if (fs.existsSync(p) && fs.statSync(p).size > 100_000) fs.writeFileSync(p, '');
+    fs.appendFileSync(p, `${new Date().toISOString()} ${msg}\n`);
+  } catch {}
+}
+
+async function consoleGet(p) {
+  const res = await consoleSession().fetch(CONSOLE_ORIGIN + p, {
+    credentials: 'include',
+    headers: { accept: 'application/json' },
+  });
+  if (!res.ok) {
+    const names = (await consoleSession().cookies.get({ url: CONSOLE_ORIGIN })).map((c) => c.name);
+    const text = (await res.text().catch(() => '')).slice(0, 200).replace(/\s+/g, ' ');
+    log(`console GET ${p} -> ${res.status} cookies=[${names.join(',')}] body=${text}`);
+  }
+  if (res.status === 401 || res.status === 403) {
+    const e = new Error('console-signin');
+    e.signin = true;
+    throw e;
+  }
+  if (!res.ok) throw new Error(`http-${res.status}`);
+  return res.json();
+}
+
+// the account can hold a claude.ai org and a Console org; credits live on the
+// one with the 'api' capability
+async function findApiOrg() {
+  const orgs = await consoleGet('/api/organizations');
+  const api = (orgs || []).filter((o) => (o.capabilities || []).includes('api'));
+  const pick = api.find((o) => o.billing_type === 'prepaid') || api[0];
+  if (!pick) throw new Error('no-api-org');
+  return pick.uuid;
+}
+
+// loaded = credit granted across the current tranches; remaining is the live
+// balance, so used covers spend from every tranche. All amounts are cents.
+function summariseApi(credits, month, limits, reload) {
+  const tranches = [...(credits.tranches || []), ...(credits.promo_tranches || [])];
+  const loadedMinor = tranches.reduce((s, t) => s + (t.granted_amount_minor_units || 0), 0);
+  const remainingMinor =
+    credits.balance?.credits?.amount_minor ?? credits.balance?.money?.amount_minor ?? credits.amount ?? 0;
+  return {
+    currency: credits.currency || 'USD',
+    loadedMinor,
+    remainingMinor,
+    usedMinor: Math.max(0, loadedMinor - remainingMinor),
+    nextExpiry: credits.next_expires_at || null,
+    monthMinor: month.amount ?? 0,
+    monthResetsAt: month.resets_at || null,
+    // enforced_limit_usd is in cents despite its name; with no user limit it
+    // is the tier ceiling
+    capMinor: limits.enforced_limit_usd ?? null,
+    userCapSet: (limits.spend_limits || []).length > 0,
+    autoReload: reload.status && reload.status !== 'disabled',
+  };
+}
+
+let apiOrg = null;
+let apiInFlight = false;
+let lastApiGoodAt = null;
+
+async function pollApi() {
+  if (!win || win.isDestroyed() || !isApi() || apiInFlight) return;
+  apiInFlight = true;
+  try {
+    if (!apiOrg) apiOrg = await findApiOrg();
+    const base = `/api/organizations/${apiOrg}`;
+    const [credits, month, limits, reload] = await Promise.all([
+      consoleGet(`${base}/prepaid/credits`),
+      consoleGet(`${base}/current_spend`),
+      consoleGet(`${base}/spend_limits`),
+      consoleGet(`${base}/prepaid/auto_recharge`),
+    ]);
+    lastApiGoodAt = Date.now();
+    win.webContents.send('api', { ok: true, ...summariseApi(credits, month, limits, reload) });
+  } catch (err) {
+    if (err.signin) apiOrg = null;
+    win.webContents.send('api', {
+      ok: false,
+      error: err.signin ? 'console-signin' : String(err.message || err),
+      staleForMs: lastApiGoodAt ? Date.now() - lastApiGoodAt : null,
+    });
+  } finally {
+    apiInFlight = false;
+  }
+}
+
+let signinWin = null;
+
+// a window opened from the widget's context menu can come up hidden on
+// Windows, so show it explicitly rather than trusting the default
+function revealSignin() {
+  if (!signinWin || signinWin.isDestroyed()) return;
+  if (signinWin.isMinimized()) signinWin.restore();
+  signinWin.show();
+  signinWin.focus();
+}
+
+function openConsoleSignin() {
+  if (signinWin && !signinWin.isDestroyed()) { revealSignin(); return; }
+  consoleSession(); // apply the user agent before the first request
+  signinWin = new BrowserWindow({
+    width: 520,
+    height: 720,
+    show: false,
+    center: true,
+    title: 'Sign in to Claude Console',
+    autoHideMenuBar: true,
+    webPreferences: { partition: CONSOLE_PARTITION },
+  });
+  // the widget sits at screen-saver level; keep sign-in above it
+  signinWin.setAlwaysOnTop(true, 'screen-saver');
+  signinWin.once('ready-to-show', revealSignin);
+  // fallback if the page is slow to paint
+  setTimeout(revealSignin, 1500);
+  // Google sign-in opens a popup, which must share this session and sit
+  // above the always-on-top sign-in window
+  signinWin.webContents.setWindowOpenHandler(() => ({ action: 'allow' }));
+  signinWin.webContents.on('did-create-window', (child) => {
+    child.setAlwaysOnTop(true, 'screen-saver');
+    child.show();
+    child.focus();
+  });
+  signinWin.loadURL(`${CONSOLE_ORIGIN}/settings/billing`);
+
+  // the session is signed in once the org list answers; close and poll
+  const timer = setInterval(async () => {
+    try { apiOrg = await findApiOrg(); } catch { return; }
+    clearInterval(timer);
+    if (signinWin && !signinWin.isDestroyed()) signinWin.close();
+  }, 3000);
+  signinWin.on('closed', () => {
+    clearInterval(timer);
+    signinWin = null;
+    pollApi();
+  });
+}
+
+async function signOutConsole() {
+  await consoleSession().clearStorageData();
+  apiOrg = null;
+  lastApiGoodAt = null;
+  pollApi();
+}
+
+function setMode(mode) {
+  saveConfig({ mode });
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('mode', mode);
+  if (mode === 'api') pollApi(); else pollUsage();
 }
 
 // ---------- token totals (tail Claude Code transcripts) ----------
@@ -417,8 +600,18 @@ function createWindow() {
   });
 
   const showMenu = () => {
+    const api = isApi();
     Menu.buildFromTemplate([
-      { label: 'Refresh now', click: () => pollUsage() },
+      { label: 'Refresh now', click: () => (api ? pollApi() : pollUsage()) },
+      {
+        label: 'Mode',
+        submenu: [
+          { label: 'Subscription', type: 'radio', checked: !api, click: () => setMode('subscription') },
+          { label: 'API credits', type: 'radio', checked: api, click: () => setMode('api') },
+        ],
+      },
+      { label: 'Sign in to Console…', visible: api, click: openConsoleSignin },
+      { label: 'Sign out of Console', visible: api, click: signOutConsole },
       {
         label: 'Always on top',
         type: 'checkbox',
@@ -467,7 +660,10 @@ function createWindow() {
     showMenu();
   });
 
-  win.webContents.on('did-finish-load', () => pollUsage());
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.send('mode', isApi() ? 'api' : 'subscription');
+    if (isApi()) pollApi(); else pollUsage();
+  });
 }
 
 ipcMain.on('widget-close', () => app.quit());
@@ -502,6 +698,7 @@ app.whenReady().then(() => {
   initWatcher();
   scanHistory();
   setInterval(pollUsage, USAGE_POLL_MS);
+  setInterval(pollApi, API_POLL_MS);
   setInterval(pollTokens, TOKEN_POLL_MS);
   setInterval(pollHover, 150);
 

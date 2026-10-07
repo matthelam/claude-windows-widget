@@ -39,6 +39,29 @@ session timer in the 20-40 gap, the silver weekly timer in the 60-80 gap.
 They tick locally off the system clock (no polling); when one hits zero the
 widget fetches fresh reset times and the just-reset pin snaps back with it.
 
+## API credits mode
+
+Right-click › **Mode › API credits** switches the dial from plan limits to the
+prepaid credits in your Claude Console (the developer API, billed separately
+from your subscription). The dial reads in dollars:
+
+- **Needle and USED box**: credit spent against credit loaded, e.g. `$2.24/$50`.
+- **Bezel**: remaining balance on the left, earliest credit expiry on the right.
+- **MONTH box**: this month's spend (and your spend limit, if you set one).
+- **Status line**: whether auto-reload is on.
+
+Top-ups appear automatically on the next refresh (every 5 minutes, or
+right-click › Refresh now).
+
+Sign in once with right-click › **Sign in to Console…**. The widget keeps that
+sign-in in its own private session; it never sees or stores your password.
+
+> **Unofficial data source.** Anthropic offers no public endpoint for prepaid
+> balance, and its Admin API is not available to individual accounts, so this
+> mode reads the same internal endpoints the Console billing page uses. They
+> may change without notice. When they stop answering, the widget blanks its
+> readings rather than show stale numbers.
+
 ## Data sources (all local / your own account)
 
 > **No separate billing.** The usage endpoint below is an account-metadata call
@@ -88,3 +111,8 @@ Press `Win+R`, type `shell:startup`, press Enter, and drop a shortcut to
   the widget keeps showing the last good data and retries in 15 seconds.
 - Odometers show **—**: they need one successful usage fetch (for the window
   reset times) plus the startup history scan; give it a few seconds.
+- **"right-click › Sign in to Console"** in API mode: the Console sign-in has
+  expired or was never completed. Sign in again from the menu.
+- **"API data unavailable"**: the Console endpoints stopped answering. Failed
+  calls are recorded in `%APPDATA%\claude-usage-widget\widget.log` (status
+  codes and error text only).
