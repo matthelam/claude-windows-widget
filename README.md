@@ -129,6 +129,14 @@ npm run dist       # build the Windows installer into dist/
 
 `Claude Widget.vbs` starts the development copy without a console window.
 
+**Demo mode** shows fixed sample figures and makes no network calls, so
+screenshots never include account details. Set `WIDGET_DEMO` to
+`subscription` or `api` before starting, for example in PowerShell:
+
+```
+$env:WIDGET_DEMO = "api"; npm start
+```
+
 Releases are automatic: push a tag such as `v1.2.0` and GitHub Actions builds
 the installer and publishes a release. Tags with a hyphen (`v1.2.0-rc1`) are
 published as pre-releases.

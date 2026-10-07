@@ -45,8 +45,36 @@ function saveConfig(patch) {
   try { fs.writeFileSync(configPath(), JSON.stringify(cfg)); } catch {}
 }
 
+// WIDGET_DEMO=subscription|api renders fixed sample figures and makes no
+// network calls, so screenshots never carry anyone's account details
+const DEMO = ['subscription', 'api'].includes(process.env.WIDGET_DEMO) ? process.env.WIDGET_DEMO : null;
+
+function demoUsage() {
+  const at = (ms) => new Date(Date.now() + ms).toISOString();
+  const week = at(4 * 86_400_000 + 6 * 3_600_000);
+  return {
+    ok: true,
+    fetchedAt: Date.now(),
+    limits: [
+      { kind: 'session', percent: 46, severity: 'normal', resetsAt: at(2 * 3_600_000 + 21 * 60_000), label: 'Session' },
+      { kind: 'weekly_all', percent: 38, severity: 'normal', resetsAt: week, label: 'Weekly' },
+      { kind: 'weekly_scoped', percent: 55, severity: 'normal', resetsAt: week, label: 'Model' },
+    ],
+    credits: {
+      currency: 'USD', usedMinor: 1840, capMinor: 5000, balanceMinor: 3160, enabled: true,
+      reason: null, userDisabled: false, limitReached: false, autoReload: true, severity: 'normal',
+    },
+  };
+}
+
+const DEMO_API = {
+  ok: true, currency: 'USD', loadedMinor: 10000, remainingMinor: 6275, usedMinor: 3725,
+  nextExpiry: '2027-03-01T00:00:00Z', monthMinor: 1210, monthResetsAt: null,
+  capMinor: null, userCapSet: false, autoReload: true,
+};
+
 // 'subscription' reads the plan limits; 'api' reads Console prepaid credits
-const isApi = () => loadConfig().mode === 'api';
+const isApi = () => (DEMO ? DEMO === 'api' : loadConfig().mode === 'api');
 
 // ---------- plan usage (OAuth endpoint) ----------
 
@@ -119,6 +147,7 @@ function extraUsageState(data) {
 
 async function pollUsage() {
   if (!win || win.isDestroyed() || isApi()) return;
+  if (DEMO) { win.webContents.send('usage', demoUsage()); return; }
   clearTimeout(usageRetryTimer);
   lastAttemptAt = Date.now();
   try {
@@ -299,6 +328,7 @@ let lastApiGoodAt = null;
 
 async function pollApi() {
   if (!win || win.isDestroyed() || !isApi() || apiInFlight) return;
+  if (DEMO) { win.webContents.send('api', DEMO_API); return; }
   apiInFlight = true;
   try {
     if (!apiOrg) apiOrg = await findApiOrg();
@@ -353,7 +383,9 @@ function openConsoleSignin() {
   setTimeout(revealSignin, 1500);
   // Google sign-in opens a popup, which must share this session and sit
   // above the always-on-top sign-in window
-  signinWin.webContents.setWindowOpenHandler(() => ({ action: 'allow' }));
+  signinWin.webContents.setWindowOpenHandler(({ url }) => ({
+    action: url.startsWith('https://') ? 'allow' : 'deny',
+  }));
   signinWin.webContents.on('did-create-window', (child) => {
     child.setAlwaysOnTop(true, 'screen-saver');
     child.show();
@@ -514,6 +546,7 @@ function pollTokens() {
 
 function sendTotals() {
   if (!win || win.isDestroyed()) return;
+  if (DEMO) { win.webContents.send('totals', { session: 48_213_904, weekly: 612_447_210 }); return; }
   const ss = windowStarts.session;
   const ws = windowStarts.weekly;
   let session = 0;

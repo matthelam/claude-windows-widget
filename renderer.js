@@ -440,7 +440,8 @@ function renderCredits(c) {
 
   const notes = [];
   if (c.balanceMinor != null) notes.push(`${sym}${(c.balanceMinor / 100).toFixed(2)} LEFT`);
-  if (c.autoReload != null) notes.push(c.autoReload ? 'AUTO-RELOAD ON' : 'AUTO-RELOAD OFF');
+  // kept short: the line sits near the bottom of the pod, where it is narrow
+  if (c.autoReload != null) notes.push(c.autoReload ? 'AUTO ON' : 'AUTO OFF');
   creditNoteEl.textContent = notes.join(' · ');
 
   creditPod.removeAttribute('display');
