@@ -26,7 +26,7 @@ const CREDIT_COLOR = '#55c97a';
 // the session pin's 104 reach; far edge at 318 stays inside the 320 viewBox
 const POD = { cx: 270, cy: 270 };
 let creditPod = null, creditNeedle = null, creditArc = null, creditValue = null;
-let creditTicks = null, creditBudgetDrawn = null;
+let creditTicks = null, creditScaleDrawn = null, creditStatusEl = null, creditNoteEl = null;
 let shownCredit = 0, targetCredit = 0;
 
 // mode layers: the face, ticks and hub are shared; everything else belongs to
@@ -164,9 +164,9 @@ function build() {
   odoSessionEl = buildOdometer(204, PINS.session.color, 'SESSION', odoBlock).text;
   odoWeeklyEl = buildOdometer(240, PINS.weekly.color, 'WEEKLY', odoBlock).text;
 
-  // usage-credit boost pod — only visible while a budget is active
-  // (right-click menu > Credit budget); overlaps the 100% corner like a
-  // turbo gauge bolted onto the cluster
+  // usage-credit boost pod — shown whenever usage credits are set up on the
+  // account, read straight from the usage payload; overlaps the 100% corner
+  // like a turbo gauge bolted onto the cluster
   buildCreditPod(subLayer);
 
   // pins (weekly under session under fable), then hub
@@ -253,11 +253,13 @@ function buildCreditPod(parent) {
     stroke: CREDIT_COLOR, 'stroke-width': 3.5, 'stroke-linecap': 'round',
   }, creditPod);
 
-  el('text', {
+  // on/off state, e.g. CREDITS ON, NO CREDITS, LIMIT HIT
+  creditStatusEl = el('text', {
     x: cx, y: cy - 12, 'text-anchor': 'middle',
-    'font-size': 5, fill: '#7d838d', 'letter-spacing': '1.5', 'font-weight': 600,
+    'font-size': 5, fill: '#7d838d', 'letter-spacing': '1.2', 'font-weight': 600,
     'font-family': 'Segoe UI, system-ui, sans-serif',
-  }, creditPod).textContent = 'CREDITS';
+  }, creditPod);
+  creditStatusEl.textContent = 'CREDITS';
 
   creditNeedle = el('g', {}, creditPod);
   el('path', {
@@ -275,14 +277,23 @@ function buildCreditPod(parent) {
     'font-family': 'Consolas, "Cascadia Mono", monospace',
   }, creditPod);
   creditValue.textContent = '$0';
+
+  // balance and auto-reload, when the payload carries them
+  creditNoteEl = el('text', {
+    x: cx, y: cy + 37, 'text-anchor': 'middle',
+    'font-size': 4.5, fill: '#9aa0aa', 'letter-spacing': '0.6', 'font-weight': 600,
+    'font-family': 'Segoe UI, system-ui, sans-serif',
+  }, creditPod);
 }
 
-function drawCreditTicks(budgetMinor) {
+const currencySymbol = (c) => (c === 'AUD' ? 'A$' : c === 'USD' ? '$' : `${c} `);
+
+function drawCreditTicks(scaleMinor, sym) {
   const { cx, cy } = POD;
   creditTicks.innerHTML = '';
-  const budget = budgetMinor / 100;
+  const budget = scaleMinor / 100;
 
-  // redline on the last 10% of the budget
+  // redline on the last 10% of the cap
   el('path', {
     d: arcPathAt(cx, cy, 35, 0.9, 1), fill: 'none',
     stroke: 'rgba(255,69,48,0.6)', 'stroke-width': 3,
@@ -301,11 +312,11 @@ function drawCreditTicks(budgetMinor) {
     }, creditTicks);
   }
 
-  // $ increment labels: start, midpoint, and the budget total at the end
+  // $ increment labels: start, midpoint, and the cap at the end
   const labels = [
     [0, '0', '#9aa0aa'],
     [0.5, String(budget / 2), '#9aa0aa'],
-    [1, `$${budget}`, CREDIT_COLOR],
+    [1, `${sym}${budget}`, CREDIT_COLOR],
   ];
   for (const [frac, textStr, fill] of labels) {
     const deg = START_DEG + SWEEP_DEG * frac;
@@ -389,23 +400,7 @@ window.widget.onUsage((data) => {
   resetsAt.weekly = week?.resetsAt ? Date.parse(week.resetsAt) : null;
   renderTimers();
 
-  if (data.credits) {
-    const { usedMinor, budgetMinor } = data.credits;
-    const used = usedMinor / 100;
-    const over = usedMinor > budgetMinor;
-    if (creditBudgetDrawn !== budgetMinor) {
-      creditBudgetDrawn = budgetMinor;
-      drawCreditTicks(budgetMinor);
-    }
-    targetCredit = Math.min(1, usedMinor / budgetMinor);
-    creditArc.setAttribute('d', arcPathAt(POD.cx, POD.cy, 43, 0, Math.max(0.0001, targetCredit)));
-    creditArc.setAttribute('stroke', over ? '#ff4530' : CREDIT_COLOR);
-    creditValue.textContent = `$${used.toFixed(used >= 100 ? 1 : 2)}`;
-    creditValue.setAttribute('fill', over ? '#ff6a58' : CREDIT_COLOR);
-    creditPod.removeAttribute('display');
-  } else {
-    creditPod.setAttribute('display', 'none');
-  }
+  renderCredits(data.credits);
   if (scoped) {
     target.scoped = (scoped.percent || 0) / 100;
     pinEls.scoped.removeAttribute('display');
@@ -413,6 +408,43 @@ window.widget.onUsage((data) => {
     pinEls.scoped.setAttribute('display', 'none');
   }
 });
+
+// subscription usage credits: spend against the monthly cap, with the on/off
+// state and why. Without a cap the scale rounds up from the spend instead.
+function renderCredits(c) {
+  if (!c) { creditPod.setAttribute('display', 'none'); return; }
+  const sym = currencySymbol(c.currency);
+  const scaleMinor = c.capMinor || niceScaleMinor(Math.max(c.usedMinor, 1000));
+  if (creditScaleDrawn !== `${scaleMinor}${sym}`) {
+    creditScaleDrawn = `${scaleMinor}${sym}`;
+    drawCreditTicks(scaleMinor, sym);
+  }
+
+  const over = c.limitReached || (c.capMinor && c.usedMinor >= c.capMinor);
+  const tone = over ? '#ff4530' : c.severity !== 'normal' ? '#f5a623' : CREDIT_COLOR;
+  targetCredit = Math.min(1, c.usedMinor / scaleMinor);
+  creditArc.setAttribute('d', arcPathAt(POD.cx, POD.cy, 39.5, 0, Math.max(0.0001, targetCredit)));
+  creditArc.setAttribute('stroke', tone);
+  creditNeedle.firstChild.setAttribute('fill', tone);
+  const used = c.usedMinor / 100;
+  creditValue.textContent = `${sym}${used.toFixed(used >= 100 ? 1 : 2)}`;
+  creditValue.setAttribute('fill', over ? '#ff6a58' : tone);
+
+  const [status, colour] =
+    c.limitReached ? ['LIMIT HIT', '#ff6a58']
+    : c.enabled ? ['CREDITS ON', CREDIT_COLOR]
+    : c.reason === 'out_of_credits' ? ['NO CREDITS', '#f5a623']
+    : ['CREDITS OFF', '#7d838d'];
+  creditStatusEl.textContent = status;
+  creditStatusEl.setAttribute('fill', colour);
+
+  const notes = [];
+  if (c.balanceMinor != null) notes.push(`${sym}${(c.balanceMinor / 100).toFixed(2)} LEFT`);
+  if (c.autoReload != null) notes.push(c.autoReload ? 'AUTO-RELOAD ON' : 'AUTO-RELOAD OFF');
+  creditNoteEl.textContent = notes.join(' · ');
+
+  creditPod.removeAttribute('display');
+}
 
 // ---------- reset countdowns ----------
 // resets_at timestamps come from the usage fetch; between fetches the

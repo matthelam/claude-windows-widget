@@ -89,16 +89,31 @@ let usageRetryTimer = null;
 let usageBackoffMs = 30_000;
 let lastGoodAt = null;
 let lastAttemptAt = 0;
-let lastSpendMinor = null; // cumulative extra-usage spend, minor units
+// money fields come as { money|credits: { amount_minor } } or bare
+const minorOf = (v) => v?.money?.amount_minor ?? v?.credits?.amount_minor ?? v?.amount_minor ?? null;
 
-// the API only exposes cumulative credit spend — a user-started budget
-// snapshots it as a baseline so we can show "$14.60/$50"
-function creditState() {
-  const b = loadConfig().creditBudget;
-  if (!b || lastSpendMinor == null) return null;
+// subscription usage credits, read straight from the usage payload: monthly
+// cap, this month's spend, on/off state and why. balance and auto_reload are
+// passed through whenever Anthropic fills them (both null on this account so
+// far). Returns null when credits were never set up.
+function extraUsageState(data) {
+  const x = data.extra_usage || {};
+  const s = data.spend || {};
+  if (!(x.credits_ever_enabled || x.is_enabled || s.enabled || x.monthly_limit != null)) return null;
+  const ar = s.auto_reload;
   return {
-    usedMinor: Math.max(0, lastSpendMinor - b.startUsedMinor),
-    budgetMinor: b.budgetMinor,
+    currency: s.used?.currency || x.currency || 'USD',
+    usedMinor: s.used?.amount_minor ?? Math.round(x.used_credits || 0),
+    capMinor: minorOf(s.cap) ?? minorOf(s.limit) ?? x.monthly_limit ?? null,
+    balanceMinor: minorOf(s.balance),
+    enabled: !!(x.is_enabled ?? s.enabled),
+    reason: x.disabled_reason || s.disabled_reason || null,
+    userDisabled: !!x.user_disabled,
+    limitReached: !!x.spend_limit_reached,
+    autoReload: ar == null ? null
+      : typeof ar === 'object' ? !!(ar.enabled ?? (ar.status ? ar.status !== 'disabled' : true))
+      : !!ar,
+    severity: s.severity || 'normal',
   };
 }
 
@@ -127,11 +142,10 @@ async function pollUsage() {
 
     lastGoodAt = Date.now();
     usageBackoffMs = 30_000;
-    lastSpendMinor = data.spend?.used?.amount_minor ?? null;
     win.webContents.send('usage', {
       ok: true,
       limits,
-      credits: creditState(),
+      credits: extraUsageState(data),
       fetchedAt: lastGoodAt,
     });
     sendTotals();
@@ -623,28 +637,6 @@ function createWindow() {
         enabled: app.isPackaged, // dev runs would register electron.exe
         checked: app.getLoginItemSettings().openAtLogin,
         click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
-      },
-      {
-        label: 'Credit budget',
-        visible: !api, // subscription-only; API mode has its own credit readings
-        submenu: [
-          ...[25, 50, 100, 200].map((amt) => ({
-            label: `Start $${amt} budget`,
-            enabled: lastSpendMinor != null,
-            click: () => {
-              saveConfig({ creditBudget: { startUsedMinor: lastSpendMinor, budgetMinor: amt * 100 } });
-              pollUsage();
-            },
-          })),
-          { type: 'separator' },
-          {
-            label: 'Clear budget',
-            click: () => {
-              saveConfig({ creditBudget: null });
-              pollUsage();
-            },
-          },
-        ],
       },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() },
