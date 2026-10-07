@@ -260,8 +260,7 @@ async function findApiOrg() {
 // loaded = credit granted across the current tranches; remaining is the live
 // balance, so used covers spend from every tranche. All amounts are cents.
 function summariseApi(credits, month, limits, reload) {
-  const tranches = [...(credits.tranches || []), ...(credits.promo_tranches || [])];
-  const loadedMinor = tranches.reduce((s, t) => s + (t.granted_amount_minor_units || 0), 0);
+  const tranches = [...(credits.tranches || []), ...(credits.promo_tranches || [])];  const loadedMinor = tranches.reduce((s, t) => s + (t.granted_amount_minor_units || 0), 0);
   const remainingMinor =
     credits.balance?.credits?.amount_minor ?? credits.balance?.money?.amount_minor ?? credits.amount ?? 0;
   return {
@@ -627,6 +626,7 @@ function createWindow() {
       },
       {
         label: 'Credit budget',
+        visible: !api, // subscription-only; API mode has its own credit readings
         submenu: [
           ...[25, 50, 100, 200].map((amt) => ({
             label: `Start $${amt} budget`,

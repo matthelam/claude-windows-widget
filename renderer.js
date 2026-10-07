@@ -35,8 +35,12 @@ const API_COLOR = '#55c97a';
 let mode = 'subscription';
 let subLayer = null, apiLayer = null, titleEl = null;
 const tickLabels = []; // { el, frac }
+const tickLines = [];  // { el, frac, major }
+let redlineEl = null, tankMarker = null;
 let apiNeedle = null, apiLeftEl = null, apiExpiryEl = null, apiUsedEl = null, apiMonthEl = null;
-let apiLoadedMinor = null, shownApi = 0, targetApi = 0;
+// apiScaleMinor is the rounded full-scale value; loaded credit sits at or
+// below it, marked on the rim
+let apiScaleMinor = null, shownApi = 0, targetApi = 0;
 
 // ---------- geometry helpers ----------
 
@@ -82,8 +86,9 @@ function build() {
   el('circle', { cx: CX, cy: CY, r: 157, fill: 'rgba(10,11,14,0.88)' });
   el('circle', { cx: CX, cy: CY, r: 146, fill: 'url(#face)', stroke: 'rgba(255,255,255,0.10)', 'stroke-width': 1 });
 
-  // redline band 80-100%
-  el('path', {
+  // redline band; 80-100% in subscription mode, the last 10% of loaded
+  // credit in API mode (see colourScale)
+  redlineEl = el('path', {
     d: arcPath(134, REDLINE_FRAC, 1), fill: 'none',
     stroke: 'rgba(255,69,48,0.5)', 'stroke-width': 7,
   });
@@ -96,10 +101,14 @@ function build() {
     const inRed = frac >= REDLINE_FRAC;
     const [x0, y0] = polar(major ? 122 : 130, deg);
     const [x1, y1] = polar(138, deg);
-    el('line', {
-      x1: x0, y1: y0, x2: x1, y2: y1,
-      stroke: inRed ? '#ff4530' : major ? '#c8ccd4' : '#565c68',
-      'stroke-width': major ? 2.5 : 1,
+    tickLines.push({
+      el: el('line', {
+        x1: x0, y1: y0, x2: x1, y2: y1,
+        stroke: inRed ? '#ff4530' : major ? '#c8ccd4' : '#565c68',
+        'stroke-width': major ? 2.5 : 1,
+      }),
+      frac,
+      major,
     });
     if (major) {
       const [tx, ty] = polar(107, deg);
@@ -214,6 +223,11 @@ function buildApiLayer() {
 
   apiUsedEl = buildOdometer(204, API_COLOR, 'USED', apiLayer).text;
   apiMonthEl = buildOdometer(240, PINS.weekly.color, 'MONTH', apiLayer).text;
+
+  // "full tank" notch: where the loaded credit ends on the rounded scale
+  tankMarker = el('line', {
+    stroke: API_COLOR, 'stroke-width': 3, 'stroke-linecap': 'round', display: 'none',
+  }, apiLayer);
 
   apiNeedle = buildPin([
     ['path', {
@@ -470,14 +484,45 @@ function setTickLabels() {
   for (const { el: t, frac } of tickLabels) {
     t.textContent = mode !== 'api'
       ? String(Math.round(frac * 100))
-      : apiLoadedMinor ? fmtUsd((apiLoadedMinor * frac) / 100, true) : '';
+      : apiScaleMinor ? fmtUsd((apiScaleMinor * frac) / 100, true) : '';
   }
 }
 
+// rounds full scale up so the five major steps are round figures:
+// $50 -> 0..50 by 10, $1,274 -> 0..1.5k by 300
+function niceScaleMinor(loadedMinor) {
+  const step = loadedMinor / 5;
+  const mag = 10 ** Math.floor(Math.log10(step));
+  const nice = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((m) => m * mag >= step - 1e-9);
+  return nice * mag * 5;
+}
+
+// redline over [redFrom, redTo]; ticks past dimFrom are capacity the scale
+// shows but the loaded credit does not reach
+function colourScale(redFrom, redTo, dimFrom) {
+  const eps = 1e-6;
+  const state = (f) =>
+    f >= redFrom - eps && f <= redTo + eps ? 'red' : f > dimFrom + eps ? 'dim' : 'normal';
+  redlineEl.setAttribute('d', arcPath(134, redFrom, redTo));
+  for (const { el: line, frac, major } of tickLines) {
+    const s = state(frac);
+    line.setAttribute('stroke',
+      s === 'red' ? '#ff4530' : s === 'dim' ? '#33373f' : major ? '#c8ccd4' : '#565c68');
+  }
+  for (const { el: t, frac } of tickLabels) {
+    const s = state(frac);
+    t.setAttribute('fill', s === 'red' ? '#ff6a58' : s === 'dim' ? '#4a505a' : '#9aa0aa');
+  }
+}
+
+const defaultScale = () => colourScale(REDLINE_FRAC, 1, 1);
+
 // readings are blanked, never left stale, when the Console stops answering
 function clearApi() {
-  apiLoadedMinor = null;
+  apiScaleMinor = null;
   targetApi = 0;
+  tankMarker.setAttribute('display', 'none');
+  defaultScale();
   apiLeftEl.textContent = '—';
   apiExpiryEl.textContent = '';
   apiUsedEl.textContent = '—';
@@ -497,9 +542,25 @@ window.widget.onApi((data) => {
     }
     return;
   }
-  apiLoadedMinor = data.loadedMinor || null;
+  apiScaleMinor = data.loadedMinor > 0 ? niceScaleMinor(data.loadedMinor) : null;
   setTickLabels();
-  targetApi = data.loadedMinor > 0 ? Math.min(1, data.usedMinor / data.loadedMinor) : 0;
+  if (apiScaleMinor) {
+    const full = data.loadedMinor / apiScaleMinor;
+    targetApi = Math.min(1, data.usedMinor / apiScaleMinor);
+    colourScale(full * 0.9, full, full);
+    const deg = START_DEG + SWEEP_DEG * full;
+    const [x1, y1] = polar(116, deg);
+    const [x2, y2] = polar(144, deg);
+    tankMarker.setAttribute('x1', x1);
+    tankMarker.setAttribute('y1', y1);
+    tankMarker.setAttribute('x2', x2);
+    tankMarker.setAttribute('y2', y2);
+    tankMarker.removeAttribute('display');
+  } else {
+    targetApi = 0;
+    tankMarker.setAttribute('display', 'none');
+    defaultScale();
+  }
 
   const low = data.loadedMinor > 0 && data.remainingMinor < data.loadedMinor * 0.1;
   apiLeftEl.parentNode.setAttribute('fill', low ? '#ff6a58' : '#7fe0a0');
@@ -522,7 +583,7 @@ function applyMode(m) {
   apiLayer.setAttribute('display', api ? 'inline' : 'none');
   titleEl.textContent = api ? 'CLAUDE API $' : 'CLAUDE CODE %';
   errEl.textContent = '';
-  if (api) clearApi(); else setTickLabels();
+  if (api) clearApi(); else { defaultScale(); setTickLabels(); }
 }
 
 window.widget.onMode(applyMode);
