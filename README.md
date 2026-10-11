@@ -44,8 +44,9 @@ figures and the reset pin drops back.
 current session window and the rolling 7-day window, counted from Claude
 Code's transcripts on this PC. Blue digits are the session, silver the week.
 
-**Usage credits subdial**: if usage credits are set up on your subscription, a
-small green gauge sits at the lower right. Everything in it comes from the
+**Usage credits subdial**: while you have usage credits available, or have
+spent some this month, a small green gauge sits at the lower right. It stays
+hidden when your credits are empty and unused. Everything in it comes from the
 usage data automatically:
 
 - your spend this month against the monthly cap you set (for example A$100);

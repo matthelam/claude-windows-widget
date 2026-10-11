@@ -411,8 +411,11 @@ window.widget.onUsage((data) => {
 
 // subscription usage credits: spend against the monthly cap, with the on/off
 // state and why. Without a cap the scale rounds up from the spend instead.
+// Shown only while there are credits to use or credits have been spent this
+// month; credits that are set up but empty and unused stay out of the way.
 function renderCredits(c) {
-  if (!c) { creditPod.setAttribute('display', 'none'); return; }
+  const active = c && (c.enabled || c.limitReached || c.usedMinor > 0 || (c.balanceMinor ?? 0) > 0);
+  if (!active) { creditPod.setAttribute('display', 'none'); return; }
   const sym = currencySymbol(c.currency);
   const scaleMinor = c.capMinor || niceScaleMinor(Math.max(c.usedMinor, 1000));
   if (creditScaleDrawn !== `${scaleMinor}${sym}`) {
